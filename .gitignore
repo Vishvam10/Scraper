@@ -1,2 +1,6 @@
 venv
 *.csv
+*.ipynb
+*.txt
+*.google-cookie
+*_cache
