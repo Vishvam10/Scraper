@@ -1,12 +1,16 @@
 import os
 import re
 import time
+import random
 # import pickle
+
+from datetime import datetime
 
 import pandas as pd
 
+from joblib import Parallel, delayed
+
 # from functools import lru_cache
-from datetime import datetime
 from concurrent import futures
 from concurrent.futures import ThreadPoolExecutor
 
@@ -20,14 +24,17 @@ from selenium.webdriver.support.ui import WebDriverWait
 # from bs4 import BeautifulSoup
 from googlesearch import search, get_random_user_agent
 
+COUNT = 1
+DRIVER_OPTIONS = Options()
+
 PATTERNS = {
     # Parse the author, date, answer, etc from here itself
     # document.querySelectorAll([class*="dom_annotate_question_answer_item"])
     "qa_card_box" : "dom_annotate_question_answer_item",
 
     # Generic patterns
-    "qa_card_author" : "puppeteer_test_link",
     "qa_card_author_description" : "",
+    "all_links" : "puppeteer_test_link",
 
 
     # Someother questions (Related, Promoted, etc) 
@@ -45,7 +52,7 @@ PATTERNS = {
 
 SEARCH_QUERY = "niit university quora"
 SCRAPED_DATA = []
-RELATED_OR_PROMOTED_LINKS = []
+RELATED_OR_PROMOTED_LINKS = set()
 
 class COLOR:
     DEFAULT = '\033[0m'
@@ -207,121 +214,6 @@ def extract_question_from_url(url) :
     
     return url.split("quora.com/")[1].lower().replace("-", " ").capitalize() 
 
-def scrape(url, index, debug=True) :
-
-    global SCRAPED_DATA
-
-      
-    driver = webdriver.Chrome(options=DRIVER_OPTIONS)
-    driver.maximize_window()
-    driver.get(url)
-
-    question = extract_question_from_url(url)
-
-    print(bold(green("\n------------------------- Scraping -------------------------\n")))
-    print(bold(green("Index : {} : {}".format(index, url))))
-    print(bold(green("--------------------------------------------------------------\n")))
-
-    c = 0
-
-    # Scroll down
-    while(c < 10) :
-        height = driver.execute_script("return document.documentElement.scrollHeight")
-        # if(debug) :
-            # print("scroll : ", height)
-        time.sleep(1)
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        c += 1
-
-    num_read_more_buttons = driver.execute_script(click_buttons())
-    
-    if(debug) :
-        msg = "Index : {} --- read more buttons clicked : {}".format(index, num_read_more_buttons)
-        print(msg)
-
-    time.sleep(2)
-
-    # Scroll down again 
-    while(c < 16) :
-        # height = driver.execute_script("return document.documentElement.scrollHeight")
-        # if(debug) :
-            # print("scroll : ", height)
-        time.sleep(1)
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        c += 1
-
-
-    num_removed_scripts = driver.execute_script(remove_unwanted_scripts())
-    if(debug) :
-        msg = "Index : {} --- scripts removed : {}".format(index, num_removed_scripts)
-        print(msg)
-
-    time.sleep(1)
-
-    num_removed_tags = driver.execute_script(remove_unwanted_html_tags())
-    if(debug) :
-        msg = "Index : {} --- tags removed : {}".format(index, num_removed_tags)
-        print(msg)
-
-    time.sleep(1)
-
-    cards = driver.find_elements(By.XPATH, "//*[contains(@class, 'dom_annotate_question_answer_item')]")
-
-    if(debug) :
-        msg = "Index : {} --- number of QA cards : {}".format(index, len(cards))
-        print(msg)
-
-    related_or_promoted_questions = []
-
-    n_answers = 0
-
-    for card in cards :
-
-        links = card.find_elements(By.TAG_NAME, "a")
-        if(len(links) > 1) :
-            url = str(links[1].get_attribute("href"))
-            
-            if("profile" in url) :
-
-                author_profile_url = url
-                author_name = extract_name_from_profile_url(author_profile_url)
-                # author_description = card.find_elements(By.XPATH, "//span[contains(@class, 'CssComponent')]")[1].get_attribute("innerText")
-
-                answer_timestamp = str(links[2].get_attribute("innerText"))
-                answer_timestamp_pattern = r"(\d+mo|\d+y)"
-
-                for temp in links :
-                    link = temp.get_attribute("innerText").strip()
-                    if(len(link) > 0) :
-                        check = re.search(answer_timestamp_pattern, link)
-                        if(check is not None) :
-                            answer_timestamp = check.group() 
-                            break
-                                    
-                
-                answer = card.find_element(By.CLASS_NAME, PATTERNS["qa_card_answer"]).get_attribute("textContent")
-
-                temp = {
-                    "question" : question,
-                    "author_name" : author_name,
-                    "answer_timestamp" : answer_timestamp,
-                    "answer" : answer,
-                }
-                n_answers += 1
-                SCRAPED_DATA.append(temp)
-
-            else :
-
-                # Could be Related or Promoted questions
-                related_or_promoted_questions.append(url)
-
-    msg = "Index : {} --- Number of answers added : {}".format(index, n_answers)
-    print(bold(cyan(msg)))
-
-    driver.quit();
-
-    return related_or_promoted_questions
-
 def filter_results(urls, patterns) :
     results = []
     for pattern in patterns :
@@ -329,18 +221,269 @@ def filter_results(urls, patterns) :
     
     return results
 
+
+def scrape(url, index, debug=True) :
+
+    global SCRAPED_DATA
+    global DRIVER_OPTIONS
+
+    driver = webdriver.Chrome(options=DRIVER_OPTIONS)
+
+    if("www.quora.com" in url and 
+        "/profile" not in url and 
+        "/about" not in url and 
+        "/careers" not in url and 
+        "/contact" not in url and 
+        "/press" not in url and 
+        "/unanswered" not in url and 
+        (
+            "niit" in url.lower() or
+            "nu" in url
+        )
+    ) : 
     
+        # We want multiple answers for the same question
+        if("/answers/" in url) :
+            url = url.split("/answers")[0]
+
+        driver.get(url)
+
+        question = extract_question_from_url(url)
+
+        print(bold(green("\n------------------------- Scraping -------------------------\n")))
+        print(bold(green("Index : {} : {}".format(index, url))))
+        print(bold(green("--------------------------------------------------------------\n")))
+
+        c = 0
+
+        # Scroll down
+        while(c < 10) :
+            height = driver.execute_script("return document.documentElement.scrollHeight")
+            # if(debug) :
+                # print("scroll : ", height)
+            time.sleep(1)
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            c += 1
+
+        num_read_more_buttons = driver.execute_script(click_buttons())
+        
+        if(debug) :
+            msg = "Index : {} --- read more buttons clicked : {}".format(index, num_read_more_buttons)
+            print(msg)
+
+        time.sleep(2)
+
+        # Scroll down again 
+        while(c < 16) :
+            # height = driver.execute_script("return document.documentElement.scrollHeight")
+            # if(debug) :
+                # print("scroll : ", height)
+            time.sleep(1)
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            c += 1
+
+
+        num_removed_scripts = driver.execute_script(remove_unwanted_scripts())
+        if(debug) :
+            msg = "Index : {} --- scripts removed : {}".format(index, num_removed_scripts)
+            print(msg)
+
+        time.sleep(1)
+
+        num_removed_tags = driver.execute_script(remove_unwanted_html_tags())
+        if(debug) :
+            msg = "Index : {} --- tags removed : {}".format(index, num_removed_tags)
+            print(msg)
+
+        time.sleep(1)
+
+        cards = driver.find_elements(By.XPATH, "//*[contains(@class, 'dom_annotate_question_answer_item')]")
+
+        if(debug) :
+            msg = "Index : {} --- number of QA cards : {}".format(index, len(cards))
+            print(msg)
+
+        if(len(cards) == 0) :
+            msg = red("Index : {} --- No QA cards found. Exiting ...".format(index))
+            print(msg)
+            
+            driver.close()
+            driver.quit()
+            return []
+
+
+        scraped_links = []
+
+        n_answers = 0
+
+        for card in cards :
+
+            links = card.find_elements(By.TAG_NAME, "a")
+            if(len(links) > 1) :
+                url = str(links[1].get_attribute("href"))
+                
+                if("profile" in url) :
+
+                    author_profile_url = url
+                    author_name = extract_name_from_profile_url(author_profile_url)
+                    # author_description = card.find_elements(By.XPATH, "//span[contains(@class, 'CssComponent')]")[1].get_attribute("innerText")
+
+                    answer_timestamp = str(links[2].get_attribute("innerText"))
+                    answer_timestamp_pattern = r"(\d+mo|\d+y)"
+
+                    for temp in links :
+                        link = temp.get_attribute("innerText").strip()
+                        if(len(link) > 0) :
+                            check = re.search(answer_timestamp_pattern, link)
+                            if(check is not None) :
+                                answer_timestamp = check.group() 
+                                break
+                                        
+                    
+                    answer = card.find_element(By.CLASS_NAME, PATTERNS["qa_card_answer"]).get_attribute("textContent")
+
+                    temp = {
+                        "question" : question,
+                        "author_name" : author_name,
+                        "answer_timestamp" : answer_timestamp,
+                        "answer" : answer,
+                    }
+                    n_answers += 1
+                    SCRAPED_DATA.append(temp)
+
+                else :
+
+                    # Could be Related or Promoted questions
+                    if(url.startswith("http") or url.startswith("https")) :
+                        temp = url.lower()
+                        if("niit" in temp or "nu" in temp) :
+                            if(url not in RELATED_OR_PROMOTED_LINKS) :
+                                RELATED_OR_PROMOTED_LINKS.add(url)
+                                scraped_links.append(url)
+
+        
+        other_links = driver.find_elements(By.CLASS_NAME, PATTERNS["all_links"])
+        for link in other_links :
+            url = link.get_attribute("href")
+            if("www.quora.com" in url and 
+            "/profile" not in url and 
+            "/about" not in url and 
+            "/careers" not in url and 
+            "/contact" not in url and 
+            "/press" not in url and 
+            "/unanswered" not in url and 
+                (
+                    "/niit" in url.lower() or
+                    "nu" in url
+                ) and 
+                url not in RELATED_OR_PROMOTED_LINKS) :
+                RELATED_OR_PROMOTED_LINKS.add(url)
+                scraped_links.append(url)
+
+
+        msg = "Index : {} --- Number of question added : {}".format(index, len(scraped_links))
+        print(purple(cyan(msg)))
+
+        msg = "Index : {} --- Number of answers added : {}".format(index, n_answers)
+        print(bold(cyan(msg)))
+
+        driver.close();
+        driver.quit();
+
+        print("\n------------ Related or promoted questions found : ------------\n")
+        for (i, val) in enumerate(scraped_links) :
+            print(i, " : ", green(val))
+
+
+        return scraped_links
+    
+    else :
+        driver.close()
+        driver.quit()
+        return []
+
+
+# def distributed_scrape(arr, top_k=3, max_workers=3) :
+
+#     scraped_links = []
+    
+#     # Create a ThreadPoolExecutor with a maximum of 3 workers
+#     with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        
+#         # submit() takes : fn, fn_arg1, fn_arg2, ... as parameters
+
+#         jobs = [executor.submit(scrape, url, i) for (i, url) in enumerate(arr[:top_k])]
+#         c = 1
+
+#         for job in futures.as_completed(jobs):
+#             res = job.result()
+#             if(len(res) > 0) :
+#                 for link in res :                    
+#                     scraped_links.append(link)
+                
+#             msg = "\nIteration : {}\n".format(c)
+#             print(bold(cyan(msg)))
+
+#             msg = "New links appended : {}".format(len(res))
+#             print(bold(msg))
+
+#             msg = "Total no. of related or promoted links : {}".format(len(RELATED_OR_PROMOTED_LINKS))
+#             print(bold(msg))
+                
+#             c += 1
+    
+#     return scraped_links
+    
+def crawl(links_set) :
+    
+    c = 0
+    
+    while(len(links_set) > 0) :
+        
+        print(green("\n------------------- Scraping Related Links : -------------------n"))
+        print(bold("Depth : {}".format(depth)))
+        print(bold("Links left : {}".format(len(links_set))))
+
+        current_link = links_set.pop()
+
+        print(bold(yellow("Current link : {}".format(current_link))))
+
+        scraped_links = set(scrape(current_link, c))
+        links_set = links_set.union(scraped_links)
+
+        print(green("\n-----------------------------------------------------------------n"))
+
+        c += 1
+    
+    return
+
+def parallel_crawl(links_set, num_threads=16):
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = []
+        c = 0
+        while len(links_set) > 0:
+            c += 1
+            current_link = links_set.pop()
+            futures.append(executor.submit(scrape, current_link, c))
+
+        for future in futures:
+            scraped_links = set(future.result())
+            links_set = set(links_set).union(scraped_links)
+
+    return links_set
 
 if __name__ == "__main__" :
 
     p_start = time.time()
 
-    DRIVER_OPTIONS = Options()
     DRIVER_OPTIONS.add_argument("log-level=3")
     DRIVER_OPTIONS.add_argument("--incognito")
     DRIVER_OPTIONS.add_argument("--no-sandbox")
     DRIVER_OPTIONS.add_argument("--disable-dev-shm-usage")
+    DRIVER_OPTIONS.add_argument("--headless")
+    DRIVER_OPTIONS.add_argument("start-maximized");
     DRIVER_OPTIONS.add_experimental_option("detach", True)
+
 
     GOOGLE_SEARCH_CACHE_FILEPATH = "./quora_cache/google_search_cache.txt"  
     GOOGLE_SEARCH_URL_PATTERN = r"\bhttps:\/\/www.quora.com\b/"
@@ -354,25 +497,25 @@ if __name__ == "__main__" :
     
 
     if(file_exists(GOOGLE_SEARCH_CACHE_FILEPATH)) :
-        results = []
+        REQUIRED_LINKS = []
         f = open(GOOGLE_SEARCH_CACHE_FILEPATH, "r")
-        results = f.readlines()
+        REQUIRED_LINKS = f.readlines()
         f.close()
 
-        results = filter_results(results, URL_FILTER_CHAIN)
+        REQUIRED_LINKS = filter_results(REQUIRED_LINKS, URL_FILTER_CHAIN)
         
-        msg = "\nUsing google search cache \nNo. of results : {}\n".format(len(results))
+        msg = "\nUsing google search cache \nNo. of REQUIRED_LINKS : {}\n".format(len(REQUIRED_LINKS))
         print(bold(purple(msg)))
 
     else :
-        msg = "\nUsing google search API \nFetching the first 50 search results\n"
+        msg = "\nUsing google search API \nFetching the first 50 search REQUIRED_LINKS\n"
         print(bold(purple(msg)))
 
         try :
 
-            # Fetch first 50 google search results
+            # Fetch first 50 google search REQUIRED_LINKS
             start = time.time()
-            results = get_google_results(SEARCH_QUERY)
+            REQUIRED_LINKS = get_google_results(SEARCH_QUERY)
             end = time.time()
 
         except Exception as e :
@@ -386,38 +529,29 @@ if __name__ == "__main__" :
         
         else :
 
-            msg = "\nTime taken to fetch {} results : {}\n".format(len(results), end-start)
+            msg = "\nTime taken to fetch {} results : {}\n".format(len(REQUIRED_LINKS), end-start)
             print(bold(msg))
 
-            content = "\n".join(results)
+            content = "\n".join(REQUIRED_LINKS)
             write_to_file(content, GOOGLE_SEARCH_CACHE_FILEPATH)
 
+    REQUIRED_LINKS = set(REQUIRED_LINKS)
 
-    # Create a ThreadPoolExecutor with a maximum of 3 workers
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    depth = 10
+
+    while(depth > 0) :
+
+        print(bold(purple("\nNumber of links found : {}".format(len(REQUIRED_LINKS)))))
+        crawled_links = set(parallel_crawl(links_set=REQUIRED_LINKS))
+        REQUIRED_LINKS = crawled_links
+
+        if(len(REQUIRED_LINKS) == 0) :
+            break
         
-        # submit() takes : fn, fn_arg1, fn_arg2, ... as parameters
-        jobs = [executor.submit(scrape, url, i) for (i, url) in enumerate(results[:5])]
-        c = 1
-
-        for job in futures.as_completed(jobs):
-            res = job.result()
-            if(len(res) > 0) :
-                RELATED_OR_PROMOTED_LINKS.append(res[0])
-                
-            msg = "\nIteration : {}\n".format(c)
-            print(bold(cyan(msg)))
-
-            msg = "New links appended : {}".format(len(res))
-            print(bold(msg))
-
-            msg = "Total no. of related or promoted links : {}".format(len(RELATED_OR_PROMOTED_LINKS))
-            print(bold(msg))
-                
-            c += 1
+        depth -= 1
 
 
-    msg = "Caching related or promoted links ... "
+    msg = "\nCaching related or promoted links ... "
     print(bold(purple(msg)))    
 
     content = "\n".join(RELATED_OR_PROMOTED_LINKS)
@@ -443,12 +577,15 @@ if __name__ == "__main__" :
     df = pd.DataFrame(SCRAPED_DATA)
     df.to_csv(csv_filename)
 
+    for (i, link) in enumerate(RELATED_OR_PROMOTED_LINKS) :
+        print(i, " : ", green(link))
+
     p_end = time.time()
 
     msg = "\n\nProcess finished. Total time taken : {}\n\n".format(p_end - p_start)
     print(bold(green(msg)))
 
-
+    exit(0)
 
 
 
