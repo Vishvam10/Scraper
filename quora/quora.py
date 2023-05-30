@@ -44,15 +44,11 @@ PATTERNS = {
     "qa_card_answer_timestamp" : "answer_timestamp",
 
     "read_more_button" : "puppeteer_test_read_more_button",
+    "login_card" : "q-box qu-p--large qu-pt--huge qu-bg--gray_ultralight qu-borderRadius--medium qu-boxShadow--small"
 
-    # Related questions
-    # document.querySelectorAll([class*="dom_annotate_related_questions"])
-    "related_questions" : "dom_annotate_related_questions"
 }
 
 SEARCH_QUERY = "niit university quora"
-SCRAPED_DATA = []
-RELATED_OR_PROMOTED_LINKS = set()
 
 class COLOR:
     DEFAULT = '\033[0m'
@@ -105,7 +101,6 @@ class COLOR:
 
     ENDC = '\033[0m'
 
-
 def bold(msg) :
     return "{}{}{}".format(COLOR.BOLD, msg, COLOR.ENDC)
 
@@ -129,6 +124,12 @@ def yellow(msg) :
 
 def purple(msg) :
     return "{}{}{}".format(COLOR.PURPLE, msg, COLOR.ENDC)
+
+def now() :
+    now = datetime.now()
+    timestamp = now.strftime("%d/%m/%Y %H:%M:%S")
+    timestamp = timestamp.replace("/", "-").replace("\\", "-").replace(" ", "_").replace(":", "-")
+    return timestamp
 
 def write_to_file(content, filename="output.txt", mode="w") :
     fname = "{}".format(filename)
@@ -224,8 +225,8 @@ def filter_results(urls, patterns) :
 
 def scrape(url, index, debug=True) :
 
-    global SCRAPED_DATA
     global DRIVER_OPTIONS
+    scraped_data = []
 
     driver = webdriver.Chrome(options=DRIVER_OPTIONS)
 
@@ -251,7 +252,7 @@ def scrape(url, index, debug=True) :
         question = extract_question_from_url(url)
 
         print(bold(green("\n------------------------- Scraping -------------------------\n")))
-        print(bold(green("Index : {} : {}".format(index, url))))
+        print(bold(green("Index : {} : {} : \n{}".format(index, url, question))))
         print(bold(green("--------------------------------------------------------------\n")))
 
         c = 0
@@ -274,7 +275,7 @@ def scrape(url, index, debug=True) :
         time.sleep(2)
 
         # Scroll down again 
-        while(c < 16) :
+        while(c < 10) :
             # height = driver.execute_script("return document.documentElement.scrollHeight")
             # if(debug) :
                 # print("scroll : ", height)
@@ -311,9 +312,6 @@ def scrape(url, index, debug=True) :
             driver.quit()
             return []
 
-
-        scraped_links = []
-
         n_answers = 0
 
         for card in cards :
@@ -349,40 +347,7 @@ def scrape(url, index, debug=True) :
                         "answer" : answer,
                     }
                     n_answers += 1
-                    SCRAPED_DATA.append(temp)
-
-                else :
-
-                    # Could be Related or Promoted questions
-                    if(url.startswith("http") or url.startswith("https")) :
-                        temp = url.lower()
-                        if("niit" in temp or "nu" in temp) :
-                            if(url not in RELATED_OR_PROMOTED_LINKS) :
-                                RELATED_OR_PROMOTED_LINKS.add(url)
-                                scraped_links.append(url)
-
-        
-        other_links = driver.find_elements(By.CLASS_NAME, PATTERNS["all_links"])
-        for link in other_links :
-            url = link.get_attribute("href")
-            if("www.quora.com" in url and 
-            "/profile" not in url and 
-            "/about" not in url and 
-            "/careers" not in url and 
-            "/contact" not in url and 
-            "/press" not in url and 
-            "/unanswered" not in url and 
-                (
-                    "/niit" in url.lower() or
-                    "nu" in url
-                ) and 
-                url not in RELATED_OR_PROMOTED_LINKS) :
-                RELATED_OR_PROMOTED_LINKS.add(url)
-                scraped_links.append(url)
-
-
-        msg = "Index : {} --- Number of question added : {}".format(index, len(scraped_links))
-        print(purple(cyan(msg)))
+                    scraped_data.append(temp)
 
         msg = "Index : {} --- Number of answers added : {}".format(index, n_answers)
         print(bold(cyan(msg)))
@@ -390,12 +355,7 @@ def scrape(url, index, debug=True) :
         driver.close();
         driver.quit();
 
-        print("\n------------ Related or promoted questions found : ------------\n")
-        for (i, val) in enumerate(scraped_links) :
-            print(i, " : ", green(val))
-
-
-        return scraped_links
+        return scraped_data
     
     else :
         driver.close()
@@ -403,76 +363,43 @@ def scrape(url, index, debug=True) :
         return []
 
 
-# def distributed_scrape(arr, top_k=3, max_workers=3) :
+def distributed_scrape(arr, top_k=5, max_workers=3) :
 
-#     scraped_links = []
+    data = []
     
-#     # Create a ThreadPoolExecutor with a maximum of 3 workers
-#     with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    # Create a ThreadPoolExecutor with a maximum of 3 workers
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         
-#         # submit() takes : fn, fn_arg1, fn_arg2, ... as parameters
+        # submit() takes : fn, fn_arg1, fn_arg2, ... as parameters
+        jobs = [executor.submit(scrape, url, i) for (i, url) in enumerate(arr[:top_k])]
+        c = 1
 
-#         jobs = [executor.submit(scrape, url, i) for (i, url) in enumerate(arr[:top_k])]
-#         c = 1
-
-#         for job in futures.as_completed(jobs):
-#             res = job.result()
-#             if(len(res) > 0) :
-#                 for link in res :                    
-#                     scraped_links.append(link)
+        for job in futures.as_completed(jobs):
+            res = job.result()
+            if(len(res) > 0) :
+                for link in res :                    
+                    data.append(link)
                 
-#             msg = "\nIteration : {}\n".format(c)
-#             print(bold(cyan(msg)))
+            msg = "\nIteration : {} --- Total number of answers : {}".format(c, len(data))
+            print(bold(cyan(msg)))
 
-#             msg = "New links appended : {}".format(len(res))
-#             print(bold(msg))
-
-#             msg = "Total no. of related or promoted links : {}".format(len(RELATED_OR_PROMOTED_LINKS))
-#             print(bold(msg))
-                
-#             c += 1
-    
-#     return scraped_links
-    
-def crawl(links_set) :
-    
-    c = 0
-    
-    while(len(links_set) > 0) :
-        
-        print(green("\n------------------- Scraping Related Links : -------------------n"))
-        print(bold("Depth : {}".format(depth)))
-        print(bold("Links left : {}".format(len(links_set))))
-
-        current_link = links_set.pop()
-
-        print(bold(yellow("Current link : {}".format(current_link))))
-
-        scraped_links = set(scrape(current_link, c))
-        links_set = links_set.union(scraped_links)
-
-        print(green("\n-----------------------------------------------------------------n"))
-
-        c += 1
-    
-    return
-
-def parallel_crawl(links_set, num_threads=16):
-    with ThreadPoolExecutor(max_workers=num_threads) as executor:
-        futures = []
-        c = 0
-        while len(links_set) > 0:
             c += 1
-            current_link = links_set.pop()
-            futures.append(executor.submit(scrape, current_link, c))
+    
+    return data
 
-        for future in futures:
-            scraped_links = set(future.result())
-            links_set = set(links_set).union(scraped_links)
-
-    return links_set
 
 if __name__ == "__main__" :
+
+    SEARCH_QUERY = input("Enter the search query : ").strip()
+    SEARCH_QUERY += " quora"
+    SEED_LIMIT = int(input("Enter the seed limit : ").strip())
+    BRANCHING_FACTOR = int(input("Enter the branching factor : ").strip())
+    
+    print(bold(blue("\n------------------------- Scraping -------------------------\n")))
+    print(bold(blue("Search Query : {}".format(SEARCH_QUERY))))
+    print(bold(blue("Seed limit : {}".format(SEED_LIMIT))))
+    print(bold(blue("Branching factor : {}".format(BRANCHING_FACTOR))))
+    print(bold(blue("--------------------------------------------------------------\n")))
 
     p_start = time.time()
 
@@ -486,99 +413,83 @@ if __name__ == "__main__" :
 
 
     GOOGLE_SEARCH_CACHE_FILEPATH = "./quora_cache/google_search_cache.txt"  
+    QUORA_CRAWLED_LINKS_CACHE_FILEPATH = "./quora_cache/quora_crawled_links.txt"
     GOOGLE_SEARCH_URL_PATTERN = r"\bhttps:\/\/www.quora.com\b/"
 
-    QUORA_RELATED_LINKS_CACHE_FILEPATH = "./quora_cache/quora_related_links_cache.txt"
 
     URL_FILTER_CHAIN = [
         GOOGLE_SEARCH_URL_PATTERN,
         # Can add multiple filters here
     ] 
+    CRAWLABLE_LINKS = []
     
+    if(not file_exists(QUORA_CRAWLED_LINKS_CACHE_FILEPATH)) :
 
-    if(file_exists(GOOGLE_SEARCH_CACHE_FILEPATH)) :
-        REQUIRED_LINKS = []
-        f = open(GOOGLE_SEARCH_CACHE_FILEPATH, "r")
-        REQUIRED_LINKS = f.readlines()
-        f.close()
+        if(file_exists(GOOGLE_SEARCH_CACHE_FILEPATH)) :
+            f = open(GOOGLE_SEARCH_CACHE_FILEPATH, "r")
+            CRAWLABLE_LINKS = f.readlines()
+            f.close()
 
-        REQUIRED_LINKS = filter_results(REQUIRED_LINKS, URL_FILTER_CHAIN)
-        
-        msg = "\nUsing google search cache \nNo. of REQUIRED_LINKS : {}\n".format(len(REQUIRED_LINKS))
-        print(bold(purple(msg)))
+            CRAWLABLE_LINKS = filter_results(CRAWLABLE_LINKS, URL_FILTER_CHAIN)
+            
+            msg = "\nUsing google search cache \nNo. of CRAWLABLE_LINKS : {}\n".format(len(CRAWLABLE_LINKS))
+            print(bold(purple(msg)))
+
+        else :
+            msg = "\nUsing google search API \nFetching the first 50 search CRAWLABLE_LINKS\n"
+            print(bold(purple(msg)))
+
+            try :
+
+                # Fetch first 50 google search CRAWLABLE_LINKS
+                start = time.time()
+                CRAWLABLE_LINKS = get_google_results(SEARCH_QUERY)
+                end = time.time()
+
+            except Exception as e :
+
+                if hasattr(e, "message"):
+                    print(red(e.message))
+                else:
+                    print(red(e))
+
+                exit(0)
+            
+            else :
+
+                msg = "\nTime taken to fetch {} results : {}\n".format(len(CRAWLABLE_LINKS), end-start)
+                print(bold(msg))
+
+                content = "\n".join(CRAWLABLE_LINKS)
+                write_to_file(content, GOOGLE_SEARCH_CACHE_FILEPATH)
+
+            CRAWLABLE_LINKS = list(set(CRAWLABLE_LINKS))
 
     else :
-        msg = "\nUsing google search API \nFetching the first 50 search REQUIRED_LINKS\n"
-        print(bold(purple(msg)))
-
-        try :
-
-            # Fetch first 50 google search REQUIRED_LINKS
-            start = time.time()
-            REQUIRED_LINKS = get_google_results(SEARCH_QUERY)
-            end = time.time()
-
-        except Exception as e :
-
-            if hasattr(e, "message"):
-                print(red(e.message))
-            else:
-                print(red(e))
-
-            exit(0)
         
-        else :
-
-            msg = "\nTime taken to fetch {} results : {}\n".format(len(REQUIRED_LINKS), end-start)
-            print(bold(msg))
-
-            content = "\n".join(REQUIRED_LINKS)
-            write_to_file(content, GOOGLE_SEARCH_CACHE_FILEPATH)
-
-    REQUIRED_LINKS = set(REQUIRED_LINKS)
-
-    depth = 10
-
-    while(depth > 0) :
-
-        print(bold(purple("\nNumber of links found : {}".format(len(REQUIRED_LINKS)))))
-        crawled_links = set(parallel_crawl(links_set=REQUIRED_LINKS))
-        REQUIRED_LINKS = crawled_links
-
-        if(len(REQUIRED_LINKS) == 0) :
-            break
+        f = open(QUORA_CRAWLED_LINKS_CACHE_FILEPATH, "r")
+        content = f.read()
+        f.close()
         
-        depth -= 1
+        CRAWLABLE_LINKS = content.split("\n")
 
+    SEED_LIMIT = min(len(CRAWLABLE_LINKS), SEED_LIMIT)
+    print(bold(blue("\nNumber of links : {}".format(len(CRAWLABLE_LINKS[:SEED_LIMIT])))))
 
-    msg = "\nCaching related or promoted links ... "
-    print(bold(purple(msg)))    
+    data = distributed_scrape(CRAWLABLE_LINKS[:SEED_LIMIT], BRANCHING_FACTOR, 9)
+    
+    # data = []
+    # for (i, link) in enumerate(CRAWLABLE_LINKS) :
+    #     data.append(scrape(link, i))
 
-    content = "\n".join(RELATED_OR_PROMOTED_LINKS)
-    write_to_file(content, QUORA_RELATED_LINKS_CACHE_FILEPATH)
-
-    # msg = "Caching results ... "
-    # print(bold(purple(msg)))
-
-    now = datetime.now()
-    timestamp = now.strftime("%d/%m/%Y %H:%M:%S")
-    timestamp = timestamp.replace("/", "-").replace("\\", "-").replace(" ", "_").replace(":", "-")
-
-    filename = "{}_{}".format("quora_data", timestamp)
-    # pickle_filename = filename + ".pkl"
+    filename = "{}_{}".format("quora_data", now())
     csv_filename = filename + ".csv"
 
-    # with open(filename, "wb") as f:
-    #     pickle.dump(SCRAPED_DATA, f)
-
-    msg = "Writing to CSV ... "
+    msg = "\nWriting to CSV ... "
     print(bold(purple(msg)))
 
-    df = pd.DataFrame(SCRAPED_DATA)
+    df = pd.DataFrame(data)
     df.to_csv(csv_filename)
-
-    for (i, link) in enumerate(RELATED_OR_PROMOTED_LINKS) :
-        print(i, " : ", green(link))
 
     p_end = time.time()
 
